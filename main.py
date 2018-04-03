@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import copy
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -13,19 +14,25 @@ from collections import namedtuple
 class DQN(nn.Module):
     def __init__(self):
         super().__init__()
-        self.memory = nn.LSTM(4,12)
+        self.hidden_dim = 12;
+        self.lstm = nn.LSTM(4,self.hidden_dim) #bigger hidden layer?
         self.cell = self.init_hidden()
-        self.fc0 = nn.Linear(4,2)
+        self.fc0 = nn.Linear(self.hidden_dim,2)
 
-    def forward(self, x):
-
-        x, self.cell = self.memory(x, self.cell) #no activation function needed at this point as they're included in the LSTM
+    def forward(self, x, cell = None):
+        if cell == None:
+            cell = self.cell
+        x, self.cell = self.lstm(x, cell) #no activation function needed at this point as they're included in the LSTM
         q = F.relu(self.fc0(x))
         return q
 
     def init_hidden(self):
         return (Variable(torch.zeros(1, 1, self.hidden_dim)),
                 Variable(torch.zeros(1, 1, self.hidden_dim)))
+
+    def get_hidden(self):
+        return (copy.deepcopy(self.cell[0].data), copy.deepcopy(self.cell[1].data));
+
 
 class DuelingDQN(nn.Module):
     def __init__(self):
@@ -69,14 +76,28 @@ class Agent(object):
         self.optimizer = torch.optim.Adam(self.Q.parameters(), lr=0.001)
         self.optimizer_target = torch.optim.Adam(self.target_Q.parameters(), lr=0.001)
 
-    def act(self, x, epsilon):
+        self.transitions = ReplayMemory(10000)
+        self.current_reward = 0
+        self.rewards = []
+
+    def resetMemory(self):
+        self.Q.init_hidden()
+        self.target_Q.init_hidden()
+
+    def getMemory(self):
+        return self.Q.get_hidden();
+
+    def appendReward(self):
+        self.rewards.append(self.current_reward)
+        self.current_reward = 0
+
+    def act(self, x, epsilon = 0):
         # TODO
         rand = np.random.uniform(0.0,1.0)
-
         if(epsilon > rand):
             return Variable(torch.from_numpy(np.array([np.random.randint(0,2)])).type(torch.LongTensor))
         else:
-            _, best_a = torch.max(self.Q.forward(x), 0, keepdim=False)
+            _, best_a = torch.max(self.Q.forward(x), 2, keepdim=False)
 
             return best_a
         # fonction utiles: torch.max()
@@ -85,23 +106,22 @@ class Agent(object):
 
     def backward(self, transitions):
         batch = Transition(*zip(*transitions))
-        done = 1 - Variable(torch.cat(batch.done))
-        state = Variable(torch.cat(batch.state))
-        action = Variable(torch.cat(batch.action))
-        next_state = Variable(torch.cat(batch.next_state))
-        reward = Variable(torch.cat(batch.reward))
+        input = Variable(torch.cat(batch.prev_output))
+        cell0 = Variable(torch.cat(batch.cell0))
+        cell1 = Variable(torch.cat(batch.cell1))
+        output = Variable(torch.cat(batch.output))
 
-        _, best_a = torch.max(self.Q.forward(next_state),1, keepdim=False)
-        #_, best_a_target = torch.max(self.target_Q.forward(next_state),1, keepdim=False)
-        expected_value_target= self.target_Q.forward(next_state)
-        #expected_value = self.Q.forward(next_state)
-        value= torch.gather(expected_value_target, 1, best_a.view(128,1))
-        #value_target= torch.gather(expected_value, 1, best_a_target.view(128,1))
-        y= done.view(128,1)*self.gamma*(value) + reward.view(128,1)
-        #y_target= done.view(128,1)*self.gamma*(value_target) + reward.view(128,1)
+        #_, best_a = torch.max(self.Q.forward(next_state),1, keepdim=False)
+        ##_, best_a_target = torch.max(self.target_Q.forward(next_state),1, keepdim=False)
+        #expected_value_target= self.target_Q.forward(next_state)
+        ##expected_value = self.Q.forward(next_state)
+        #value= torch.gather(expected_value_target, 1, best_a.view(128,1))
+        ##value_target= torch.gather(expected_value, 1, best_a_target.view(128,1))
+        #y= done.view(128,1)*self.gamma*(value) + reward.view(128,1)
+        ##y_target= done.view(128,1)*self.gamma*(value_target) + reward.view(128,1)
 
-        real_value = torch.gather(self.Q.forward(state), 1, action.view(128, 1))
-        real_value_target = torch.gather(self.target_Q.forward(state), 1, action.view(128, 1))
+        #real_value = torch.gather(self.Q.forward(state), 1, action.view(128, 1))
+        #real_value_target = torch.gather(self.target_Q.forward(state), 1, action.view(128, 1))
 
         #Qs = self.Q.forward(state)
         #_, best_a_current = torch.max(Qs,1, keepdim=False)
@@ -116,18 +136,16 @@ class Agent(object):
         #Y = Variable(A_expected.data)
         #Y.volatile=False
 
-        loss = torch.nn.functional.smooth_l1_loss(real_value, y.detach())
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        soft_update(self.target_Q,self.Q,0.005)
+        #loss = torch.nn.functional.smooth_l1_loss(real_value, y.detach())
+        #self.optimizer.zero_grad()
+        #loss.backward()
+        #self.optimizer.step()
+        #soft_update(self.target_Q,self.Q,0.005)
 
         #loss_target = torch.nn.functional.smooth_l1_loss(real_value_target, y_target.detach())
         #self.optimizer_target.zero_grad()
         #loss_target.backward()
         #self.optimizer_target.step()
-
-
 
         # LOSS = y - d
         # GRAD DESCENT WITH LOSS + GRAD
@@ -137,7 +155,8 @@ class Agent(object):
         pass
 
 Transition = namedtuple('Transition',
-                        ('state', 'action', 'next_state', 'reward', 'done'))
+                        #('state', 'action', 'next_state', 'reward', 'done'))
+                        ('prev_output', 'cell0', 'cell1', 'output'))
 
 
 class ReplayMemory(object):
@@ -163,32 +182,101 @@ class ReplayMemory(object):
 env = gym.make('CartPole-v0')
 agent = Agent()
 memory = ReplayMemory(100000)
-batch_size = 128
 
 epsilon = 1
 rewards = []
 
-for i in range(5000):
-    obs = env.reset()
-    done = False
-    total_reward = 0
-    epsilon *= 0.99
-    while not done:
-        epsilon = max(epsilon, 0.01)
-        obs_input = Variable(torch.from_numpy(obs).type(torch.FloatTensor))
-        action = agent.act(obs_input, epsilon)
-        next_obs, reward, done, _ = env.step(action.data.numpy()[0])
-        memory.push(obs_input.data.view(1,-1), action.data,
-                    torch.from_numpy(next_obs).type(torch.FloatTensor).view(1,-1), torch.Tensor([reward]),
-                   torch.Tensor([done]))
-        obs = next_obs
-        total_reward += reward
-    rewards.append(total_reward)
-    if memory.__len__() > 10000:
-        batch = memory.sample(batch_size)
-        agent.backward(batch)
+Agents = []
 
-pd.DataFrame(rewards).rolling(50, center=False).mean().plot()
-plt.show()
+nbAgents = 2
+epochs = 500
+iterations = 100
+batch_size = 50
+
+for i in range(nbAgents):
+    Agents.append(Agent())
+    pass
+
+def Game(actionA, actionB):
+    R = 3
+    S = 0
+    T = 5
+    P = 1
+    #1 is cooperate 0 is defect
+    rewardA = 0
+    rewardB = 0
+    if actionA == 1:
+        if actionB == 1:
+            rewardA = R
+            rewardB = R
+            pass
+        else:
+            rewardA = S
+            rewardB = T
+            pass
+        pass
+    else:
+        if actionB == 1:
+            rewardA = T
+            rewardB = S
+            pass
+        else:
+            rewardA = P
+            rewardB = P
+            pass
+        pass
+    return torch.FloatTensor([actionA, actionB, rewardA, rewardB])
+
+for e in range(epochs):
+    print(e)
+    for A in Agents:
+        for B in Agents:
+            state = torch.FloatTensor([0, 0, 0, 0])
+            A.resetMemory()
+            B.resetMemory()
+            for i in range(iterations):
+                Amem = A.getMemory()
+                Bmem = B.getMemory()
+                ActionA = A.act(Variable(state).view(1,1,-1))
+                ActionB = B.act(Variable(state).view(1,1,-1))
+                results = Game(ActionA.data[0][0], ActionB.data[0][0])
+                A.transitions.push(copy.deepcopy(state), Amem[0], Amem[1], copy.deepcopy(results))
+                B.transitions.push(copy.deepcopy(state), Bmem[0], Bmem[1], copy.deepcopy(results))
+                state = copy.deepcopy(results)
+                #keep track of cumulative score
+                A.current_reward += results[2]
+                B.current_reward += results[3]
+            pass
+        pass
+    pass
+
+    for A in Agents:
+        A.appendReward()
+        batch = A.transitions.sample(batch_size)
+        A.backward(batch)
+        pass
+
+#for i in range(5000):
+#    obs = env.reset()
+#    done = False
+#    total_reward = 0
+#    epsilon *= 0.99
+#    while not done:
+#        epsilon = max(epsilon, 0.01)
+#        obs_input = Variable(torch.from_numpy(obs).type(torch.FloatTensor))
+#        action = agent.act(obs_input, epsilon)
+#        next_obs, reward, done, _ = env.step(action.data.numpy()[0])
+#        memory.push(obs_input.data.view(1,-1), action.data,
+#                    torch.from_numpy(next_obs).type(torch.FloatTensor).view(1,-1), torch.Tensor([reward]),
+#                    torch.Tensor([done]))
+#        obs = next_obs
+#        total_reward += reward
+#    rewards.append(total_reward)
+#    if memory.__len__() > 10000:
+#        batch = memory.sample(batch_size)
+#        agent.backward(batch)
+
+#pd.DataFrame(rewards).rolling(50, center=False).mean().plot()
+#plt.show()
 
 print(rewards)
