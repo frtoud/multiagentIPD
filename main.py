@@ -81,8 +81,8 @@ class Agent(object):
         self.rewards = []
 
     def resetMemory(self):
-        self.Q.init_hidden()
-        self.target_Q.init_hidden()
+        self.Q.cell = self.Q.init_hidden()
+        self.target_Q.cell = self.target_Q.init_hidden()
 
     def getMemory(self):
         return self.Q.get_hidden();
@@ -91,11 +91,11 @@ class Agent(object):
         self.rewards.append(self.current_reward)
         self.current_reward = 0
 
-    def act(self, x, epsilon = 0):
+    def act(self, x, epsilon = 0.9):
         # TODO
         rand = np.random.uniform(0.0,1.0)
         if(epsilon > rand):
-            return Variable(torch.from_numpy(np.array([np.random.randint(0,2)])).type(torch.LongTensor))
+            return Variable(torch.from_numpy(np.array([np.random.randint(0,2)])).type(torch.LongTensor)).view(1,-1)
         else:
             _, best_a = torch.max(self.Q.forward(x), 2, keepdim=False)
 
@@ -106,12 +106,24 @@ class Agent(object):
 
     def backward(self, transitions):
         batch = Transition(*zip(*transitions))
-        input = Variable(torch.cat(batch.prev_output))
-        cell0 = Variable(torch.cat(batch.cell0))
-        cell1 = Variable(torch.cat(batch.cell1))
-        output = Variable(torch.cat(batch.output))
+        input = Variable(torch.cat(batch.prev_output)).view(1, batch_size, -1)
+        cell0 = Variable(torch.cat(batch.cell0)).view(1, batch_size, -1)
+        cell1 = Variable(torch.cat(batch.cell1)).view(1, batch_size, -1)
+        output = Variable(torch.cat(batch.output)).view(1, batch_size, -1)
 
+        action = torch.index_select(output, 2, Variable(torch.LongTensor([0]))) #.data
+
+        real_value = torch.gather(self.Q.forward(input, (cell0, cell1)), 2, action.long())
         #_, best_a = torch.max(self.Q.forward(next_state),1, keepdim=False)
+
+        cell0_2, cell1_2 = self.getMemory()
+
+        _, best_a = torch.max(self.Q.forward(output), 2, keepdim=True)
+        expected = self.target_Q.forward(output, (Variable(cell0_2), Variable(cell1_2)))
+        value = torch.gather(expected, 2, best_a)
+
+        y = self.gamma * value + torch.index_select(output, 2, Variable(torch.LongTensor([2]))) + 0.8 * torch.index_select(output, 2, Variable(torch.LongTensor([3])))
+
         ##_, best_a_target = torch.max(self.target_Q.forward(next_state),1, keepdim=False)
         #expected_value_target= self.target_Q.forward(next_state)
         ##expected_value = self.Q.forward(next_state)
@@ -136,11 +148,11 @@ class Agent(object):
         #Y = Variable(A_expected.data)
         #Y.volatile=False
 
-        #loss = torch.nn.functional.smooth_l1_loss(real_value, y.detach())
-        #self.optimizer.zero_grad()
-        #loss.backward()
-        #self.optimizer.step()
-        #soft_update(self.target_Q,self.Q,0.005)
+        loss = torch.nn.functional.smooth_l1_loss(real_value, y.detach())
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        soft_update(self.target_Q,self.Q,0.005)
 
         #loss_target = torch.nn.functional.smooth_l1_loss(real_value_target, y_target.detach())
         #self.optimizer_target.zero_grad()
@@ -152,6 +164,7 @@ class Agent(object):
         # TODO
         # fonctions utiles: torch.gather(), torch.detach()
         # torch.nn.functional.smooth_l1_loss()
+        self.resetMemory()
         pass
 
 Transition = namedtuple('Transition',
@@ -183,13 +196,13 @@ env = gym.make('CartPole-v0')
 agent = Agent()
 memory = ReplayMemory(100000)
 
-epsilon = 1
+epsilon = 1.0
 rewards = []
 
 Agents = []
 
 nbAgents = 2
-epochs = 500
+epochs = 50
 iterations = 100
 batch_size = 50
 
@@ -225,36 +238,37 @@ def Game(actionA, actionB):
             rewardB = P
             pass
         pass
-    return torch.FloatTensor([actionA, actionB, rewardA, rewardB])
+    return (torch.FloatTensor([actionA, actionB, rewardA, rewardB]), torch.FloatTensor([actionB, actionA, rewardB, rewardA]))
 
 for e in range(epochs):
-    print(e)
+    epsilon *= 0.95
+    epsilon = max(epsilon, 0.01)
     for A in Agents:
         for B in Agents:
-            state = torch.FloatTensor([0, 0, 0, 0])
+            stateA = torch.FloatTensor([0, 0, 0, 0])
+            stateB = torch.FloatTensor([0, 0, 0, 0])
             A.resetMemory()
             B.resetMemory()
             for i in range(iterations):
+                print(e)
                 Amem = A.getMemory()
                 Bmem = B.getMemory()
-                ActionA = A.act(Variable(state).view(1,1,-1))
-                ActionB = B.act(Variable(state).view(1,1,-1))
-                results = Game(ActionA.data[0][0], ActionB.data[0][0])
-                A.transitions.push(copy.deepcopy(state), Amem[0], Amem[1], copy.deepcopy(results))
-                B.transitions.push(copy.deepcopy(state), Bmem[0], Bmem[1], copy.deepcopy(results))
-                state = copy.deepcopy(results)
+                ActionA = A.act(Variable(stateA).view(1,1,-1), epsilon)
+                ActionB = B.act(Variable(stateB).view(1,1,-1), epsilon)
+                resultsA, resultsB = Game(ActionA.data[0][0], ActionB.data[0][0])
+                A.transitions.push(copy.deepcopy(stateA), Amem[0], Amem[1], copy.deepcopy(resultsA))
+                B.transitions.push(copy.deepcopy(stateB), Bmem[0], Bmem[1], copy.deepcopy(resultsB))
+                stateA = copy.deepcopy(resultsA)
+                stateB = copy.deepcopy(resultsB)
                 #keep track of cumulative score
-                A.current_reward += results[2]
-                B.current_reward += results[3]
-            pass
-        pass
-    pass
+                A.current_reward += resultsA[2]
+                B.current_reward += resultsB[2]
+                print(resultsA)
 
-    for A in Agents:
-        A.appendReward()
-        batch = A.transitions.sample(batch_size)
-        A.backward(batch)
-        pass
+    for C in Agents:
+        C.appendReward()
+        batch = C.transitions.sample(batch_size)
+        C.backward(batch)
 
 #for i in range(5000):
 #    obs = env.reset()
@@ -278,5 +292,5 @@ for e in range(epochs):
 
 #pd.DataFrame(rewards).rolling(50, center=False).mean().plot()
 #plt.show()
-
-print(rewards)
+for C in Agents:
+    print(C.rewards)
