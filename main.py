@@ -66,6 +66,8 @@ def hard_update(target, source):
         target_param.data.copy_(param.data)
 
 
+learnrate = 0.001
+
 class Agent(object):
     def __init__(self, gamma=0.99, batch_size=128):
         self.target_Q = DQN()
@@ -73,8 +75,8 @@ class Agent(object):
         self.gamma = gamma
         self.batch_size = 128
         hard_update(self.target_Q, self.Q)
-        self.optimizer = torch.optim.Adam(self.Q.parameters(), lr=0.001)
-        self.optimizer_target = torch.optim.Adam(self.target_Q.parameters(), lr=0.001)
+        self.optimizer = torch.optim.Adam(self.Q.parameters(), lr=learnrate)
+        #self.optimizer_target = torch.optim.Adam(self.target_Q.parameters(), lr=learnrate)
 
         self.transitions = ReplayMemory(10000)
         self.current_reward = 0
@@ -86,6 +88,14 @@ class Agent(object):
 
     def getMemory(self):
         return self.Q.get_hidden();
+
+    def offspring(self, inherit=0.99):
+        newAgent = Agent()
+        soft_update(newAgent.Q, self.Q, inherit)
+        soft_update(newAgent.target_Q, self.target_Q, inherit)
+        newAgent.rewards = copy.deepcopy(self.rewards)
+        newAgent.transitions = copy.deepcopy(self.transitions)
+        return newAgent
 
     def appendReward(self):
         self.rewards.append(self.current_reward)
@@ -122,7 +132,7 @@ class Agent(object):
         expected = self.target_Q.forward(output, (Variable(cell0_2), Variable(cell1_2)))
         value = torch.gather(expected, 2, best_a)
 
-        y = self.gamma * value + torch.index_select(output, 2, Variable(torch.LongTensor([2]))) + 0.8 * torch.index_select(output, 2, Variable(torch.LongTensor([3])))
+        y = self.gamma * value + torch.index_select(output, 2, Variable(torch.LongTensor([2]))) # + 0.8 * torch.index_select(output, 2, Variable(torch.LongTensor([3])))
 
         ##_, best_a_target = torch.max(self.target_Q.forward(next_state),1, keepdim=False)
         #expected_value_target= self.target_Q.forward(next_state)
@@ -196,25 +206,28 @@ env = gym.make('CartPole-v0')
 agent = Agent()
 memory = ReplayMemory(100000)
 
-epsilon = 1.0
+epsilon = 0.75
 rewards = []
 
 Agents = []
+DeadAgents = []
 
-nbAgents = 2
+nbAgents = 5
 epochs = 50
-iterations = 100
+iterations = 20
 batch_size = 50
+learnrate = 0.001
+inheritance = 0.99
 
 for i in range(nbAgents):
     Agents.append(Agent())
     pass
 
 def Game(actionA, actionB):
-    R = 3
-    S = 0
-    T = 5
-    P = 1
+    R = 3 - 2
+    S = 0 - 2
+    T = 5 - 2
+    P = 1 - 2
     #1 is cooperate 0 is defect
     rewardA = 0
     rewardB = 0
@@ -241,10 +254,14 @@ def Game(actionA, actionB):
     return (torch.FloatTensor([actionA, actionB, rewardA, rewardB]), torch.FloatTensor([actionB, actionA, rewardB, rewardA]))
 
 for e in range(epochs):
-    epsilon *= 0.95
+    epsilon *= 0.90
     epsilon = max(epsilon, 0.01)
     for A in Agents:
         for B in Agents:
+    #for a in range(len(Agents)):
+    #   for b in range(a, len(Agents)):
+    #        A = Agents[a]
+    #        B = Agents[b]
             stateA = torch.FloatTensor([0, 0, 0, 0])
             stateB = torch.FloatTensor([0, 0, 0, 0])
             A.resetMemory()
@@ -265,10 +282,25 @@ for e in range(epochs):
                 B.current_reward += resultsB[2]
                 print(resultsA)
 
+    WorstAgent = Agents[0]
+    BestAgent = Agents[0]
     for C in Agents:
+
+        if (WorstAgent.current_reward > C.current_reward):
+            WorstAgent = C
+
+        if (BestAgent.current_reward < C.current_reward):
+            BestAgent = C
+
         C.appendReward()
         batch = C.transitions.sample(batch_size)
         C.backward(batch)
+
+    #Darwinism
+    Agents.remove(WorstAgent)
+    DeadAgents.append(WorstAgent)
+    Agents.append(BestAgent.offspring(inheritance))
+
 
 #for i in range(5000):
 #    obs = env.reset()
@@ -293,4 +325,7 @@ for e in range(epochs):
 #pd.DataFrame(rewards).rolling(50, center=False).mean().plot()
 #plt.show()
 for C in Agents:
+    print(C.rewards)
+
+for C in DeadAgents:
     print(C.rewards)
