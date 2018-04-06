@@ -14,16 +14,18 @@ from collections import namedtuple
 class DQN(nn.Module):
     def __init__(self):
         super().__init__()
-        self.hidden_dim = 12;
+        self.hidden_dim = 64
         self.lstm = nn.LSTM(4,self.hidden_dim) #bigger hidden layer?
         self.cell = self.init_hidden()
-        self.fc0 = nn.Linear(self.hidden_dim,2)
+        self.fc0 = nn.Linear(self.hidden_dim,self.hidden_dim)
+        self.fc1 = nn.Linear(self.hidden_dim,2)
 
     def forward(self, x, cell = None):
         if cell == None:
             cell = self.cell
         x, self.cell = self.lstm(x, cell) #no activation function needed at this point as they're included in the LSTM
-        q = F.relu(self.fc0(x))
+        x = F.relu(self.fc0(x))
+        q = F.relu(self.fc1(x))
         return q
 
     def init_hidden(self):
@@ -90,9 +92,10 @@ class Agent(object):
         return self.Q.get_hidden();
 
     def offspring(self, inherit=0.99):
-        newAgent = Agent()
+        newAgent = Agent(self.gamma, self.batch_size)
         soft_update(newAgent.Q, self.Q, inherit)
         soft_update(newAgent.target_Q, self.target_Q, inherit)
+        newAgent.current_reward = self.current_reward
         newAgent.rewards = copy.deepcopy(self.rewards)
         newAgent.transitions = copy.deepcopy(self.transitions)
         return newAgent
@@ -132,7 +135,9 @@ class Agent(object):
         expected = self.target_Q.forward(output, (Variable(cell0_2), Variable(cell1_2)))
         value = torch.gather(expected, 2, best_a)
 
-        y = self.gamma * value + torch.index_select(output, 2, Variable(torch.LongTensor([2]))) # + 0.8 * torch.index_select(output, 2, Variable(torch.LongTensor([3])))
+        y = self.gamma * value + torch.index_select(output, 2, Variable(torch.LongTensor([2])))
+        #y += 0.75 * torch.index_select(output, 2, Variable(torch.LongTensor([3])))
+        #y += 0.75 * torch.index_select(input, 2, Variable(torch.LongTensor([2])))
 
         ##_, best_a_target = torch.max(self.target_Q.forward(next_state),1, keepdim=False)
         #expected_value_target= self.target_Q.forward(next_state)
@@ -206,28 +211,30 @@ env = gym.make('CartPole-v0')
 agent = Agent()
 memory = ReplayMemory(100000)
 
-epsilon = 0.75
+epsilon = 1.0
 rewards = []
 
 Agents = []
 DeadAgents = []
 
-nbAgents = 5
-epochs = 50
-iterations = 20
-batch_size = 50
-learnrate = 0.001
-inheritance = 0.99
+nbAgents = 10
+epochs = 20
+iterations = 10
+batch_size = min(50, 2 * nbAgents * iterations)
+learnrate = 0.0001
+inheritance = 0.95
+replacement = 0.5
 
 for i in range(nbAgents):
     Agents.append(Agent())
     pass
 
 def Game(actionA, actionB):
-    R = 3 - 2
-    S = 0 - 2
-    T = 5 - 2
-    P = 1 - 2
+    O = -2
+    R = 3 + O
+    S = 0 + O
+    T = 5 + O
+    P = 1 + O
     #1 is cooperate 0 is defect
     rewardA = 0
     rewardB = 0
@@ -253,8 +260,51 @@ def Game(actionA, actionB):
         pass
     return (torch.FloatTensor([actionA, actionB, rewardA, rewardB]), torch.FloatTensor([actionB, actionA, rewardB, rewardA]))
 
+#Darwins
+def BestWorst(qt = 1):
+
+    for i in range(qt):
+        WorstAgent = Agents[0]
+        WorstReward = WorstAgent.current_reward
+        BestAgent = Agents[0]
+        BestReward = BestAgent.current_reward
+
+        for C in Agents:
+            if (WorstReward > C.current_reward):
+                WorstAgent = C
+                WorstReward = WorstAgent.current_reward
+
+            if (BestReward < C.current_reward):
+                BestAgent = C
+                BestReward = BestAgent.current_reward
+
+        Agents.remove(WorstAgent)
+        DeadAgents.append(WorstAgent)
+        WorstAgent.appendReward()
+        Agents.append(BestAgent.offspring(inheritance))
+def Starve(min = 0):
+    free = nbAgents - len(Agents)
+    KillAgents = []
+    NewAgents = []
+
+    for C in Agents:
+        if (min > C.current_reward):
+            KillAgents.append(C)
+            C.appendReward()
+            free += 1
+        else:
+            if (free > 0):
+                free -= 1
+                NewAgents.append(C.offspring(inheritance))
+    for K in KillAgents:
+        Agents.remove(K)
+        DeadAgents.append(K)
+    for N in NewAgents:
+        Agents.append(N)
+
+
 for e in range(epochs):
-    epsilon *= 0.90
+    epsilon *= 0.60
     epsilon = max(epsilon, 0.01)
     for A in Agents:
         for B in Agents:
@@ -267,7 +317,6 @@ for e in range(epochs):
             A.resetMemory()
             B.resetMemory()
             for i in range(iterations):
-                print(e)
                 Amem = A.getMemory()
                 Bmem = B.getMemory()
                 ActionA = A.act(Variable(stateA).view(1,1,-1), epsilon)
@@ -280,27 +329,16 @@ for e in range(epochs):
                 #keep track of cumulative score
                 A.current_reward += resultsA[2]
                 B.current_reward += resultsB[2]
-                print(resultsA)
 
-    WorstAgent = Agents[0]
-    BestAgent = Agents[0]
+                print(e, resultsA[0], resultsA[1])
+
+    #BestWorst(max(1, int(replacement * nbAgents)))
+    #Starve(nbAgents * 2 * iterations * 0.2)
+
     for C in Agents:
-
-        if (WorstAgent.current_reward > C.current_reward):
-            WorstAgent = C
-
-        if (BestAgent.current_reward < C.current_reward):
-            BestAgent = C
-
         C.appendReward()
         batch = C.transitions.sample(batch_size)
         C.backward(batch)
-
-    #Darwinism
-    Agents.remove(WorstAgent)
-    DeadAgents.append(WorstAgent)
-    Agents.append(BestAgent.offspring(inheritance))
-
 
 #for i in range(5000):
 #    obs = env.reset()
@@ -328,4 +366,4 @@ for C in Agents:
     print(C.rewards)
 
 for C in DeadAgents:
-    print(C.rewards)
+    print("DEAD:", C.rewards)
