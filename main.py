@@ -14,7 +14,7 @@ from collections import namedtuple
 class DQN(nn.Module):
     def __init__(self):
         super().__init__()
-        self.hidden_dim = 64
+        self.hidden_dim = 16
         self.lstm = nn.LSTM(4,self.hidden_dim) #bigger hidden layer?
         self.cell = self.init_hidden()
         self.fc0 = nn.Linear(self.hidden_dim,self.hidden_dim)
@@ -117,7 +117,7 @@ class Agent(object):
 
         pass
 
-    def backward(self, transitions):
+    def backward(self, transitions, batch_size):
         batch = Transition(*zip(*transitions))
         input = Variable(torch.cat(batch.prev_output)).view(1, batch_size, -1)
         cell0 = Variable(torch.cat(batch.cell0)).view(1, batch_size, -1)
@@ -207,27 +207,25 @@ class ReplayMemory(object):
     def __len__(self):
         return len(self.memory)
 
-env = gym.make('CartPole-v0')
-agent = Agent()
-memory = ReplayMemory(100000)
+env = gym.make('CartPole-v0') #DELET
 
 epsilon = 1.0
+anneal = 0.99
 rewards = []
 
 Agents = []
 DeadAgents = []
 
 nbAgents = 10
-epochs = 20
-iterations = 10
-batch_size = min(50, 2 * nbAgents * iterations)
-learnrate = 0.0001
-inheritance = 0.95
-replacement = 0.5
+epochs = 500
+iterations = 100
 
-for i in range(nbAgents):
-    Agents.append(Agent())
-    pass
+batch_size = min(50, 2 * nbAgents * iterations)
+learnrate = 0.0002
+inheritance = 0.95
+replacement = 0.2
+selectionEpoch = epochs*0.2
+
 
 def Game(actionA, actionB):
     O = -2
@@ -302,68 +300,105 @@ def Starve(min = 0):
     for N in NewAgents:
         Agents.append(N)
 
+def Comp():
+    epsilon = 1.0
 
-for e in range(epochs):
-    epsilon *= 0.60
-    epsilon = max(epsilon, 0.01)
-    for A in Agents:
-        for B in Agents:
-    #for a in range(len(Agents)):
-    #   for b in range(a, len(Agents)):
-    #        A = Agents[a]
-    #        B = Agents[b]
-            stateA = torch.FloatTensor([0, 0, 0, 0])
-            stateB = torch.FloatTensor([0, 0, 0, 0])
-            A.resetMemory()
-            B.resetMemory()
+    for i in range(nbAgents):
+        Agents.append(Agent())
+        pass
+
+    for e in range(epochs):
+        epsilon *= anneal
+        epsilon = max(epsilon, 0.01)
+        for A in Agents:
+            for B in Agents:
+        #for a in range(len(Agents)):
+        #   for b in range(a, len(Agents)):
+        #        A = Agents[a]
+        #        B = Agents[b]
+                stateA = torch.FloatTensor([0, 0, 0, 0])
+                stateB = torch.FloatTensor([0, 0, 0, 0])
+                A.resetMemory()
+                B.resetMemory()
+                for i in range(iterations):
+                    Amem = A.getMemory()
+                    Bmem = B.getMemory()
+                    ActionA = A.act(Variable(stateA).view(1,1,-1), epsilon)
+                    ActionB = B.act(Variable(stateB).view(1,1,-1), epsilon)
+                    resultsA, resultsB = Game(ActionA.data[0][0], ActionB.data[0][0])
+                    A.transitions.push(copy.deepcopy(stateA), Amem[0], Amem[1], copy.deepcopy(resultsA))
+                    B.transitions.push(copy.deepcopy(stateB), Bmem[0], Bmem[1], copy.deepcopy(resultsB))
+                    stateA = copy.deepcopy(resultsA)
+                    stateB = copy.deepcopy(resultsB)
+                    #keep track of cumulative score
+                    A.current_reward += resultsA[2]
+                    B.current_reward += resultsB[2]
+
+                    print(e, resultsA[0], resultsA[1])
+
+        if (e >= selectionEpoch):
+        #    BestWorst(max(1, int(replacement * nbAgents)))
+        #    Starve(nbAgents * 2 * iterations * 0)
+            pass
+
+        for C in Agents:
+            C.appendReward()
+            batch = C.transitions.sample(batch_size)
+            C.backward(batch, batch_size)
+
+def TFT(b_size = iterations, nb = 1):
+
+    agents = []
+    for i in range(nb):
+        agents.append(Agent())
+        pass
+    epsilon = 1
+
+    for e in range(epochs):
+        for agent in agents:
+            epsilon *= anneal
+            epsilon = max(epsilon, 0.01)
+            state = torch.FloatTensor([0, 0, 0, 0])
+            agent.resetMemory()
+            ActionA = Variable(torch.LongTensor([[1]])).view(1,-1)
             for i in range(iterations):
-                Amem = A.getMemory()
-                Bmem = B.getMemory()
-                ActionA = A.act(Variable(stateA).view(1,1,-1), epsilon)
-                ActionB = B.act(Variable(stateB).view(1,1,-1), epsilon)
-                resultsA, resultsB = Game(ActionA.data[0][0], ActionB.data[0][0])
-                A.transitions.push(copy.deepcopy(stateA), Amem[0], Amem[1], copy.deepcopy(resultsA))
-                B.transitions.push(copy.deepcopy(stateB), Bmem[0], Bmem[1], copy.deepcopy(resultsB))
-                stateA = copy.deepcopy(resultsA)
-                stateB = copy.deepcopy(resultsB)
+                mem = agent.getMemory()
+                ActionB = copy.deepcopy(ActionA)
+                ActionA = agent.act(Variable(state).view(1,1,-1), epsilon)
+                results, _ = Game(ActionA.data[0][0], ActionB.data[0][0])
+                agent.transitions.push(copy.deepcopy(state), mem[0], mem[1], copy.deepcopy(results))
+                state = copy.deepcopy(results)
                 #keep track of cumulative score
-                A.current_reward += resultsA[2]
-                B.current_reward += resultsB[2]
+                agent.current_reward += results[2]
 
-                print(e, resultsA[0], resultsA[1])
+                print(e, results[0], results[1])
 
-    #BestWorst(max(1, int(replacement * nbAgents)))
-    #Starve(nbAgents * 2 * iterations * 0.2)
+            agent.appendReward()
+            batch = agent.transitions.sample(b_size)
+            agent.backward(batch, b_size)
 
-    for C in Agents:
-        C.appendReward()
-        batch = C.transitions.sample(batch_size)
-        C.backward(batch)
+    for agent in agents:
+        plt.plot(agent.rewards)
+    plt.show()
 
-#for i in range(5000):
-#    obs = env.reset()
-#    done = False
-#    total_reward = 0
-#    epsilon *= 0.99
-#    while not done:
-#        epsilon = max(epsilon, 0.01)
-#        obs_input = Variable(torch.from_numpy(obs).type(torch.FloatTensor))
-#        action = agent.act(obs_input, epsilon)
-#        next_obs, reward, done, _ = env.step(action.data.numpy()[0])
-#        memory.push(obs_input.data.view(1,-1), action.data,
-#                    torch.from_numpy(next_obs).type(torch.FloatTensor).view(1,-1), torch.Tensor([reward]),
-#                    torch.Tensor([done]))
-#        obs = next_obs
-#        total_reward += reward
-#    rewards.append(total_reward)
-#    if memory.__len__() > 10000:
-#        batch = memory.sample(batch_size)
-#        agent.backward(batch)
+#Comp()
 
-#pd.DataFrame(rewards).rolling(50, center=False).mean().plot()
-#plt.show()
+TFT(iterations, 10)
+
+data = []
 for C in Agents:
     print(C.rewards)
+#    data.append(C.rewards)
+    plt.plot(C.rewards)
 
 for C in DeadAgents:
     print("DEAD:", C.rewards)
+#    data.append(C.rewards)
+    plt.plot(C.rewards)
+
+#plot = np.array(data)
+#plot = plot.reshape(-1, plot.shape[0])
+#print("plot dimension: ", plot.shape[0], plot.shape[1])
+#pd.DataFrame(data).plot()
+#plt.plot()
+plt.show()
