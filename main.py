@@ -10,6 +10,7 @@ import gym
 from torch.autograd import Variable
 import random
 from collections import namedtuple
+import uuid
 
 class lstmDQN(nn.Module):
     def __init__(self):
@@ -79,6 +80,32 @@ class Agent(object):
         self.transitions = ReplayMemory(10000)
         self.current_reward = 0
         self.rewards = []
+
+        self.ID = uuid.uuid4()
+        self.resetTrust()
+
+    def resetTrust(self):
+        self.Trust = {}
+
+    def setTrust(self, increment, uuid):
+        if self.Trust.get(uuid) is None:
+            self.Trust[uuid] = 0
+        self.Trust[uuid] += increment
+
+    def getMistrusted(self):
+        worstTrust = list(self.Trust.keys())[0]
+        for thisUuid, trust in self.Trust.items():
+            if self.Trust[worstTrust] > trust:
+                worstTrust = thisUuid
+
+        return worstTrust
+    def getTrusted(self):
+        bestTrust = list(self.Trust.keys())[0]
+        for thisUuid, trust in self.Trust.items():
+            if self.Trust[bestTrust] < trust:
+                bestTrust = thisUuid
+
+        return bestTrust
 
     def resetMemory(self):
         self.Q.cell = self.Q.init_hidden()
@@ -154,6 +181,32 @@ class RnnAgent(object):
         self.current_reward = 0
         self.rewards = []
 
+        self.ID = uuid.uuid4()
+        self.resetTrust()
+
+    def resetTrust(self):
+        self.Trust = {}
+
+    def setTrust(self, increment, uuid):
+        if self.Trust[uuid] is None:
+            self.Trust[uuid] = 0
+        self.Trust[uuid] += increment
+
+    def getMistrusted(self):
+        worstTrust = list(self.Trust.keys())[0]
+        for uuid, trust in self.Trust:
+            if self.Trust[worstTrust] > trust:
+                worstTrust = uuid
+
+        return worstTrust
+    def getTrusted(self):
+        bestTrust = list(self.Trust.keys())[0]
+        for uuid, trust in self.Trust:
+            if self.Trust[bestTrust] < trust:
+                bestTrust = uuid
+
+        return bestTrust
+
     def resetMemory(self):
         self.prev2 = Variable(torch.zeros(1, 1, 4))
         self.prev3 = Variable(torch.zeros(1, 1, 4))
@@ -176,14 +229,15 @@ class RnnAgent(object):
 
     def act(self, x, epsilon = 0.9):
         #TODO: Concat prev2 and prev3 to X as Input
-        #Replace prev3 with prev2, prev2 with X as memory
+        input = torch.cat((self.prev3, self.prev2, x), dim=2)
         rand = np.random.uniform(0.0,1.0)
+        self.prev3 = self.prev2
+        self.prev2 = x
         if(epsilon > rand):
             return Variable(torch.from_numpy(np.array([np.random.randint(0,2)])).type(torch.LongTensor)).view(1,-1)
         else:
-            _, best_a = torch.max(self.Q.forward(x), 2, keepdim=False)
+            _, best_a = torch.max(self.Q.forward(input), 2, keepdim=False)
             return best_a
-        
 
     def backward(self, transitions, batch_size):
         batch = Transition(*zip(*transitions))
@@ -192,15 +246,15 @@ class RnnAgent(object):
         prev3 = Variable(torch.cat(batch.cell1)).view(1, batch_size, -1)
         output = Variable(torch.cat(batch.output)).view(1, batch_size, -1)
 
-    #TODO: Review Backward logic with prev1-2-3 - output
+        input = torch.cat((prev3, prev2, prev1), dim=2)
+        input_next = torch.cat((prev2, prev1, output), dim=2)
+
         action = torch.index_select(output, 2, Variable(torch.LongTensor([0]))) #.data
 
-        real_value = torch.gather(self.Q.forward(input, (cell0, cell1)), 2, action.long())
+        real_value = torch.gather(self.Q.forward(input), 2, action.long())
 
-        cell0_2, cell1_2 = self.getMemory()
-
-        _, best_a = torch.max(self.Q.forward(output), 2, keepdim=True)
-        expected = self.target_Q.forward(output, (Variable(cell0_2), Variable(cell1_2)))
+        _, best_a = torch.max(self.Q.forward(input_next), 2, keepdim=True)
+        expected = self.target_Q.forward(input_next)
         value = torch.gather(expected, 2, best_a)
 
         y = self.gamma * value + torch.index_select(output, 2, Variable(torch.LongTensor([2])))
@@ -248,15 +302,15 @@ rewards = []
 Agents = []
 DeadAgents = []
 
-nbAgents = 10
-epochs = 500
-iterations = 100
+nbAgents = 5
+epochs = 200
+iterations = 20
 
 batch_size = min(50, 2 * nbAgents * iterations)
 learnrate = 0.0002
 inheritance = 0.95
 replacement = 0.2
-selectionEpoch = epochs*0.2
+selectionEpoch = epochs * 0.2
 
 
 def Game(actionA, actionB):
@@ -309,8 +363,8 @@ def BestWorst(qt = 1):
                 BestReward = BestAgent.current_reward
 
         Agents.remove(WorstAgent)
-        DeadAgents.append(WorstAgent)
         WorstAgent.appendReward()
+        DeadAgents.append(WorstAgent.rewards)
         Agents.append(BestAgent.offspring(inheritance))
 def Starve(min = 0):
     free = nbAgents - len(Agents)
@@ -328,9 +382,36 @@ def Starve(min = 0):
                 NewAgents.append(C.offspring(inheritance))
     for K in KillAgents:
         Agents.remove(K)
-        DeadAgents.append(K)
+        DeadAgents.append(K.rewards)
     for N in NewAgents:
         Agents.append(N)
+def Social(qt = 1):
+
+    TrustVotes = {}
+    AgentReferences = {}
+
+    for C in Agents:
+        TrustVotes[C.ID] = 0
+        AgentReferences[C.ID] = C
+
+    for C in Agents:
+        TrustVotes[C.getTrusted()] += 1
+        TrustVotes[C.getMistrusted()] -= 1
+
+    for i in range(qt):
+        BestUuid = list(TrustVotes.keys())[0]
+        WorstUuid = list(TrustVotes.keys())[0]
+        for uuid, trust in TrustVotes.items():
+            if TrustVotes[BestUuid] < trust:
+                BestUuid = uuid
+            if TrustVotes[WorstUuid] > trust:
+                WorstUuid = uuid
+
+        if WorstUuid != BestUuid:
+            Agents.remove(AgentReferences[WorstUuid])
+            AgentReferences[WorstUuid].appendReward()
+            DeadAgents.append(AgentReferences[WorstUuid].rewards)
+            Agents.append(AgentReferences[BestUuid].offspring(inheritance))
 
 def Comp():
     epsilon = 1.0
@@ -343,16 +424,19 @@ def Comp():
         epsilon *= anneal
         epsilon = max(epsilon, 0.01)
         for A in Agents:
-            for B in Agents:
-        #for a in range(len(Agents)):
-        #   for b in range(a, len(Agents)):
-        #        A = Agents[a]
-        #        B = Agents[b]
+            A.resetTrust()
+        #for A in Agents:
+        #    for B in Agents:
+        for a in range(len(Agents)):
+           for b in range(a, len(Agents)):
+                A = Agents[a]
+                B = Agents[b]
                 stateA = torch.FloatTensor([0, 0, 0, 0])
                 stateB = torch.FloatTensor([0, 0, 0, 0])
                 A.resetMemory()
                 B.resetMemory()
                 for i in range(iterations):
+                #for i in range(int((random.random() + 0.5)* iterations)):
                     Amem = A.getMemory()
                     Bmem = B.getMemory()
                     ActionA = A.act(Variable(stateA).view(1,1,-1), epsilon)
@@ -366,10 +450,15 @@ def Comp():
                     A.current_reward += resultsA[2]
                     B.current_reward += resultsB[2]
 
+                    A.setTrust((ActionB.data[0][0] - 0.5)*2, B.ID)
+                    B.setTrust((ActionA.data[0][0] - 0.5)*2, A.ID)
+
+
                     print(e, resultsA[0], resultsA[1])
 
         if (e >= selectionEpoch):
         #    BestWorst(max(1, int(replacement * nbAgents)))
+            Social(max(1, int(replacement * nbAgents)))
         #    Starve(nbAgents * 2 * iterations * 0)
             pass
 
@@ -390,7 +479,7 @@ def TFT(b_size = iterations, nb = 1):
         for agent in agents:
             epsilon *= anneal
             epsilon = max(epsilon, 0.01)
-            state = torch.FloatTensor([0, 0, 0, 0])
+            state = torch.FloatTensor([1, 1, 0, 0])
             agent.resetMemory()
             ActionA = Variable(torch.LongTensor([[1]])).view(1,-1)
             for i in range(iterations):
@@ -413,9 +502,9 @@ def TFT(b_size = iterations, nb = 1):
         plt.plot(agent.rewards)
     plt.show()
 
-#Comp()
+Comp()
 
-TFT(iterations, 10)
+#TFT(iterations, nbAgents)
 
 data = []
 for C in Agents:
@@ -424,9 +513,9 @@ for C in Agents:
     plt.plot(C.rewards)
 
 for C in DeadAgents:
-    print("DEAD:", C.rewards)
+    print("DEAD:", C)
 #    data.append(C.rewards)
-    plt.plot(C.rewards)
+    plt.plot(C)
 
 #plot = np.array(data)
 #plot = plot.reshape(-1, plot.shape[0])
