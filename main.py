@@ -11,7 +11,7 @@ from torch.autograd import Variable
 import random
 from collections import namedtuple
 
-class DQN(nn.Module):
+class lstmDQN(nn.Module):
     def __init__(self):
         super().__init__()
         self.hidden_dim = 16
@@ -36,23 +36,19 @@ class DQN(nn.Module):
         return (copy.deepcopy(self.cell[0].data), copy.deepcopy(self.cell[1].data));
 
 
-class DuelingDQN(nn.Module):
+class rDQN(nn.Module):
     def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(4, 512)
-        self.fc2 = nn.Linear(512, 512)
-        self.fadvantage = nn.Linear(512, 2)
-
-        self.fvalue = nn.Linear(512, 1)
+        self.hidden_dim = 32
+        self.fc1 = nn.Linear(12, self.hidden_dim)
+        self.fc2 = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.fc3 = nn.Linear(self.hidden_dim, 2)
 
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        advantage = self.fadvantage(x)
+        q = F.relu(self.fc3(x))
 
-        value = self.fvalue(x)
-
-        q = value + advantage
         return q
 
 # from https://github.com/ghliu/pytorch-ddpg/blob/master/util.py
@@ -72,8 +68,8 @@ learnrate = 0.001
 
 class Agent(object):
     def __init__(self, gamma=0.99, batch_size=128):
-        self.target_Q = DQN()
-        self.Q = DQN()
+        self.target_Q = lstmDQN()
+        self.Q = lstmDQN()
         self.gamma = gamma
         self.batch_size = 128
         hard_update(self.target_Q, self.Q)
@@ -89,7 +85,7 @@ class Agent(object):
         self.target_Q.cell = self.target_Q.init_hidden()
 
     def getMemory(self):
-        return self.Q.get_hidden();
+        return self.Q.get_hidden()
 
     def offspring(self, inherit=0.99):
         newAgent = Agent(self.gamma, self.batch_size)
@@ -105,7 +101,6 @@ class Agent(object):
         self.current_reward = 0
 
     def act(self, x, epsilon = 0.9):
-        # TODO
         rand = np.random.uniform(0.0,1.0)
         if(epsilon > rand):
             return Variable(torch.from_numpy(np.array([np.random.randint(0,2)])).type(torch.LongTensor)).view(1,-1)
@@ -113,7 +108,6 @@ class Agent(object):
             _, best_a = torch.max(self.Q.forward(x), 2, keepdim=False)
 
             return best_a
-        # fonction utiles: torch.max()
 
         pass
 
@@ -127,7 +121,6 @@ class Agent(object):
         action = torch.index_select(output, 2, Variable(torch.LongTensor([0]))) #.data
 
         real_value = torch.gather(self.Q.forward(input, (cell0, cell1)), 2, action.long())
-        #_, best_a = torch.max(self.Q.forward(next_state),1, keepdim=False)
 
         cell0_2, cell1_2 = self.getMemory()
 
@@ -136,32 +129,6 @@ class Agent(object):
         value = torch.gather(expected, 2, best_a)
 
         y = self.gamma * value + torch.index_select(output, 2, Variable(torch.LongTensor([2])))
-        #y += 0.75 * torch.index_select(output, 2, Variable(torch.LongTensor([3])))
-        #y += 0.75 * torch.index_select(input, 2, Variable(torch.LongTensor([2])))
-
-        ##_, best_a_target = torch.max(self.target_Q.forward(next_state),1, keepdim=False)
-        #expected_value_target= self.target_Q.forward(next_state)
-        ##expected_value = self.Q.forward(next_state)
-        #value= torch.gather(expected_value_target, 1, best_a.view(128,1))
-        ##value_target= torch.gather(expected_value, 1, best_a_target.view(128,1))
-        #y= done.view(128,1)*self.gamma*(value) + reward.view(128,1)
-        ##y_target= done.view(128,1)*self.gamma*(value_target) + reward.view(128,1)
-
-        #real_value = torch.gather(self.Q.forward(state), 1, action.view(128, 1))
-        #real_value_target = torch.gather(self.target_Q.forward(state), 1, action.view(128, 1))
-
-        #Qs = self.Q.forward(state)
-        #_, best_a_current = torch.max(Qs,1, keepdim=False)
-        #state_value = self.target_Q.forward(state)
-        #V_state= torch.gather(state_value, 1, best_a_current.view(128,1))
-
-        #Q_action= torch.gather(Qs, 1, action.view(128,1))
-
-        #A = Q_action - V_state
-        #A_expected = y - V_state
-
-        #Y = Variable(A_expected.data)
-        #Y.volatile=False
 
         loss = torch.nn.functional.smooth_l1_loss(real_value, y.detach())
         self.optimizer.zero_grad()
@@ -169,16 +136,81 @@ class Agent(object):
         self.optimizer.step()
         soft_update(self.target_Q,self.Q,0.005)
 
-        #loss_target = torch.nn.functional.smooth_l1_loss(real_value_target, y_target.detach())
-        #self.optimizer_target.zero_grad()
-        #loss_target.backward()
-        #self.optimizer_target.step()
+        self.resetMemory()
+        pass
 
-        # LOSS = y - d
-        # GRAD DESCENT WITH LOSS + GRAD
-        # TODO
-        # fonctions utiles: torch.gather(), torch.detach()
-        # torch.nn.functional.smooth_l1_loss()
+class RnnAgent(object):
+    def __init__(self, gamma=0.99, batch_size=128):
+        self.target_Q = rDQN()
+        self.Q = rDQN()
+        self.gamma = gamma
+        self.batch_size = 128
+        hard_update(self.target_Q, self.Q)
+        self.optimizer = torch.optim.Adam(self.Q.parameters(), lr=learnrate)
+        #self.optimizer_target = torch.optim.Adam(self.target_Q.parameters(), lr=learnrate)
+
+        self.resetMemory()
+        self.transitions = ReplayMemory(10000)
+        self.current_reward = 0
+        self.rewards = []
+
+    def resetMemory(self):
+        self.prev2 = Variable(torch.zeros(1, 1, 4))
+        self.prev3 = Variable(torch.zeros(1, 1, 4))
+
+    def getMemory(self):
+        return copy.deepcopy((self.prev2.data, self.prev3.data))
+
+    def offspring(self, inherit=0.99):
+        newAgent = Agent(self.gamma, self.batch_size)
+        soft_update(newAgent.Q, self.Q, inherit)
+        soft_update(newAgent.target_Q, self.target_Q, inherit)
+        newAgent.current_reward = self.current_reward
+        newAgent.rewards = copy.deepcopy(self.rewards)
+        newAgent.transitions = copy.deepcopy(self.transitions)
+        return newAgent
+
+    def appendReward(self):
+        self.rewards.append(self.current_reward)
+        self.current_reward = 0
+
+    def act(self, x, epsilon = 0.9):
+        #TODO: Concat prev2 and prev3 to X as Input
+        #Replace prev3 with prev2, prev2 with X as memory
+        rand = np.random.uniform(0.0,1.0)
+        if(epsilon > rand):
+            return Variable(torch.from_numpy(np.array([np.random.randint(0,2)])).type(torch.LongTensor)).view(1,-1)
+        else:
+            _, best_a = torch.max(self.Q.forward(x), 2, keepdim=False)
+            return best_a
+        
+
+    def backward(self, transitions, batch_size):
+        batch = Transition(*zip(*transitions))
+        prev1 = Variable(torch.cat(batch.prev_output)).view(1, batch_size, -1)
+        prev2 = Variable(torch.cat(batch.cell0)).view(1, batch_size, -1)
+        prev3 = Variable(torch.cat(batch.cell1)).view(1, batch_size, -1)
+        output = Variable(torch.cat(batch.output)).view(1, batch_size, -1)
+
+    #TODO: Review Backward logic with prev1-2-3 - output
+        action = torch.index_select(output, 2, Variable(torch.LongTensor([0]))) #.data
+
+        real_value = torch.gather(self.Q.forward(input, (cell0, cell1)), 2, action.long())
+
+        cell0_2, cell1_2 = self.getMemory()
+
+        _, best_a = torch.max(self.Q.forward(output), 2, keepdim=True)
+        expected = self.target_Q.forward(output, (Variable(cell0_2), Variable(cell1_2)))
+        value = torch.gather(expected, 2, best_a)
+
+        y = self.gamma * value + torch.index_select(output, 2, Variable(torch.LongTensor([2])))
+
+        loss = torch.nn.functional.smooth_l1_loss(real_value, y.detach())
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        soft_update(self.target_Q,self.Q,0.005)
+
         self.resetMemory()
         pass
 
