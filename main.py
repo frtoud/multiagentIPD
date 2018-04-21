@@ -296,21 +296,21 @@ class ReplayMemory(object):
 env = gym.make('CartPole-v0') #DELET
 
 epsilon = 1.0
-anneal = 0.999
+anneal = 0.90
 rewards = []
 
 Agents = []
 DeadAgents = []
 
-nbAgents = 30
-epochs = 500
+nbAgents = 10
+epochs = 100
 iterations = 20
 
 batch_size = min(50, 2 * nbAgents * iterations)
-learnrate = 0.0002
+learnrate = 0.002
 inheritance = 0.95
 replacement = 0.1
-selectionEpoch = epochs * 0.65
+selectionEpoch = epochs * 0.25
 
 
 def Game(actionA, actionB):
@@ -459,8 +459,8 @@ def Comp():
 
         if (e >= selectionEpoch):
         #    BestWorst(max(1, int(replacement * nbAgents)))
-        #    Social(max(1, int(replacement * nbAgents)))
-            Starve(nbAgents * 2 * iterations * 0)
+            Social(max(1, int(replacement * nbAgents)))
+        #    Starve(nbAgents * 2 * iterations * 0)
             pass
 
         for C in Agents:
