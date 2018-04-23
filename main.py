@@ -75,7 +75,6 @@ class Agent(object):
         self.batch_size = 128
         hard_update(self.target_Q, self.Q)
         self.optimizer = torch.optim.Adam(self.Q.parameters(), lr=learnrate)
-        #self.optimizer_target = torch.optim.Adam(self.target_Q.parameters(), lr=learnrate)
 
         self.transitions = ReplayMemory(10000)
         self.current_reward = 0
@@ -174,7 +173,6 @@ class RnnAgent(object):
         self.batch_size = 128
         hard_update(self.target_Q, self.Q)
         self.optimizer = torch.optim.Adam(self.Q.parameters(), lr=learnrate)
-        #self.optimizer_target = torch.optim.Adam(self.target_Q.parameters(), lr=learnrate)
 
         self.resetMemory()
         self.transitions = ReplayMemory(10000)
@@ -228,7 +226,6 @@ class RnnAgent(object):
         self.current_reward = 0
 
     def act(self, x, epsilon = 0.9):
-        #TODO: Concat prev2 and prev3 to X as Input
         input = torch.cat((self.prev3, self.prev2, x), dim=2)
         rand = np.random.uniform(0.0,1.0)
         self.prev3 = self.prev2
@@ -269,12 +266,10 @@ class RnnAgent(object):
         pass
 
 Transition = namedtuple('Transition',
-                        #('state', 'action', 'next_state', 'reward', 'done'))
                         ('prev_output', 'cell0', 'cell1', 'output'))
 
 
 class ReplayMemory(object):
-
     def __init__(self, capacity):
         self.capacity = capacity
         self.memory = []
@@ -292,8 +287,6 @@ class ReplayMemory(object):
 
     def __len__(self):
         return len(self.memory)
-
-env = gym.make('CartPole-v0') #DELET
 
 epsilon = 1.0
 anneal = 0.90
@@ -425,8 +418,6 @@ def Comp():
         epsilon = max(epsilon, 0.01)
         for A in Agents:
             A.resetTrust()
-        #for A in Agents:
-        #    for B in Agents:
         print(e)
         for a in range(len(Agents)):
            for b in range(a, len(Agents)):
@@ -454,8 +445,6 @@ def Comp():
                     A.setTrust((ActionB.data[0][0] - 0.5)*2, B.ID)
                     B.setTrust((ActionA.data[0][0] - 0.5)*2, A.ID)
 
-
-                    #print(e, resultsA[0], resultsA[1])
 
         if (e >= selectionEpoch):
         #    BestWorst(max(1, int(replacement * nbAgents)))
@@ -549,11 +538,7 @@ for C in DeadAgents:
     print("DEAD:", C)
 #    data.append(C.rewards)
     plt.plot(C)
-#plot = np.array(data)
-#plot = plot.reshape(-1, plot.shape[0])
-#print("plot dimension: ", plot.shape[0], plot.shape[1])
-#pd.DataFrame(data).plot()
-#plt.plot()
+
 plt.show()
 
 Validation(agents=Agents)
